@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: self-hosted
+    env:
+      SLACK_CHANNEL_ID:
+      SLACK_MENTION:
+      APP_NAME: FE-Blog
+
+    strategy:
+      matrix:
+        node-version: [18]
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build app(Include Lint and Format)
+        run: npm run build
+
+      # - name: Run Test
+      #   run: npm run test
+
+      - name: On success
+        if: success()
+        run: |
+          echo "color=28a745" >> "$GITHUB_ENV"
+
+      - name: failure
+        if: failure()
+        run: |
+          echo "color=ff0000" >> "$GITHUB_ENV"
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.24.0
+        if: always()
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          update-ts: ${{ steps.slack.outputs.ts }}
+          payload: |
+            {
+              "attachments": [
+                {
+                  "fallback": "${{ env.APP_NAME }} - CI completed ${{ job.status }}", 
+                  "blocks": [
+                    {
+                      "type": "section",
+                      "text": {
+                          "type": "mrkdwn",
+                          "text": "${{ env.SLACK_MENTION }}${{ env.APP_NAME }} - CI completed: `${{ job.status }}`\nRepo: <${{ github.event.pull_request.html_url }}|${{ github.event.pull_request.html_url }}> on branch ${{ github.event.pull_request.head.ref }}\nSender: <${{ github.event.sender.html_url }}|${{ github.event.sender.login }}>"
+                      }
+                    }
+                  ],
+                  "color": "${{env.color}}"
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

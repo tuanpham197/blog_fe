@@ -1,0 +1,100 @@
+name: "[Dev] Deploy"
+
+on:
+  push:
+    branches: [develop]
+
+jobs:
+  build-and-deploy:
+    # runs-on: ubuntu-latest
+    runs-on: self-hosted
+    env:
+      SLACK_CHANNEL_ID: 
+      SLACK_MENTION: 
+      APP_URL: https://blog-fe-mocha.vercel.app/
+      APP_NAME: FE-Blog
+      #  If Ready for deployment and fill AWS credentials -> change to ACTIVE_DEPLOY: true
+      ACTIVE_DEPLOY: true
+    strategy:
+      matrix:
+        node-version: [18]
+
+    steps:      
+      - name: Checkout Repository
+        uses: actions/checkout@v4 
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build app
+        run: |
+          echo "${{ secrets.DEV_ENV }}" > .env
+          npm run build
+          zip -r --symlinks build.zip .
+
+      - name: SCP files via ssh key
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.DEV_REMOTE_HOST }}
+          username: ${{ secrets.DEV_REMOTE_USER }}
+          key:  ${{ secrets.DEV_SSH_PRIVATE_KEY }}
+          source: "build.zip"
+          target: ${{ secrets.DEV_REMOTE_TARGET_DIR }}
+
+      - name: Deploy to EC2
+        if: env.ACTIVE_DEPLOY == 'true'
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEV_REMOTE_HOST }}
+          username: ${{ secrets.DEV_REMOTE_USER }}
+          key: ${{ secrets.DEV_SSH_PRIVATE_KEY }}
+          script: |
+            TIMESTAMP=$(date +%Y%m%d%H%M%S)
+            cd ${{ secrets.DEV_REMOTE_TARGET_DIR }}
+            unzip build.zip -d ${{ secrets.APP_FOLDER }}_$TIMESTAMP
+            ln -sfn ${{ secrets.DEV_REMOTE_TARGET_DIR }}/${{ secrets.APP_FOLDER }}_$TIMESTAMP ${{ secrets.DEV_REMOTE_TARGET_DIR }}/${{ secrets.APP_FOLDER }}
+            pm2 reload all
+            ls -dt ${{ secrets.APP_FOLDER }}_* | tail -n +4 | xargs rm -rf
+            rm build.zip
+
+      - name: On success
+        if: success()
+        run: |
+          echo "color=28a745" >> "$GITHUB_ENV"
+
+      - name: failure
+        if: failure()
+        run: |
+          echo "color=ff0000" >> "$GITHUB_ENV"
+
+      - name: Notify Slack
+        uses: slackapi/slack-github-action@v1.24.0
+        if: always()
+        with:
+          channel-id: ${{ env.SLACK_CHANNEL_ID }}
+          update-ts: ${{ steps.slack.outputs.ts }}
+          payload: |
+            {
+              "attachments": [
+                {
+                  "fallback": "${{ env.APP_NAME }} - Deployment completed ${{ job.status }}",
+                  "blocks": [
+                    {
+                      "type": "section",
+                      "text": {
+                          "type": "mrkdwn",
+                          "text": "`${{ env.SLACK_MENTION }}`${{ env.APP_NAME }} - Deployment completed: `${{ job.status }}`\nRepo: <${{ github.event.repository.html_url }}/tree/${{ github.ref_name }}|${{ github.event.repository.full_name }}> on branch ${{ github.ref_name }}\nCommit: <${{ github.event.compare }}|${{ github.event.after }}>\nSender: <${{ github.event.sender.html_url }}|${{ github.event.sender.login }}>\nApp Link: <${{ env.APP_URL }}|${{ env.APP_URL }}>"
+                      }
+                    }
+                  ],
+                  "color": "${{env.color}}"
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
